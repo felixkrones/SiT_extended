@@ -16,7 +16,7 @@ import torch.nn as nn
 import torch.backends.cudnn as cudnn
 import torch.nn.functional as F
 
-from datasets import load_dataset, datasets_utils
+from dataset_functions import load_dataset, datasets_utils
 
 import utils
 import vision_transformer as vits
@@ -33,7 +33,7 @@ def get_args_parser():
     parser.add_argument('--drop_align', type=int, default=1, help='Align drop with patches; Set to patch size to align corruption with patches')
     parser.add_argument('--drop_type', type=str, default='zeros', help='Drop Type.')
     
-    parser.add_argument('--lmbda', type=int, default=1, help='Scaling factor for the reconstruction loss')
+    parser.add_argument('--lmbda', type=int, default=5, help='Scaling factor for the reconstruction loss')
     
     # SimCLR Parameters
     parser.add_argument('--out_dim', default=256, type=int, help="Dimensionality of output features")
@@ -44,7 +44,8 @@ def get_args_parser():
     # Model parameters
     parser.add_argument('--model', default='vit_small', type=str, choices=['vit_tiny', 'vit_small', 'vit_base'], help="Name of architecture")
     parser.add_argument('--drop_path_rate', type=float, default=0.1, help="stochastic depth rate")
-    
+    parser.add_argument('--input_channels', default=1, type=int, help='input channel size for medical images. If True, then 2D image is repeated thrice.')
+
 
     # Training/Optimization parameters
     parser.add_argument('--use_fp16', type=utils.bool_flag, default=True)
@@ -52,7 +53,7 @@ def get_args_parser():
     parser.add_argument('--weight_decay_end', type=float, default=0.1)
     parser.add_argument('--clip_grad', type=float, default=3.0)
     
-    parser.add_argument('--batch_size', default=32, type=int)
+    parser.add_argument('--batch_size', default=64, type=int)
     parser.add_argument('--epochs', default=800, type=int, help='Number of epochs of training.')
 
     parser.add_argument("--lr", default=0.0005, type=float, help="Learning rate.")
@@ -64,10 +65,11 @@ def get_args_parser():
     parser.add_argument('--data_set', default='Pets', type=str, 
                         choices=['STL10', 'MNIST', 'CIFAR10', 'CIFAR100', 'Flowers', 'Aircraft', 
                                  'Cars', 'ImageNet5p', 'ImageNet', 'TinyImageNet', 'Pets', 'CUB',
-                                 'PASCALVOC', 'MSCOCO', 'VisualGenome500'], 
+                                 'PASCALVOC', 'MSCOCO', 'VisualGenome500', 'MIMIC'], 
                         help='Name of the dataset.')
     parser.add_argument('--data_location', default='/path/to/dataset', type=str, help='Dataset location.')
-
+    parser.add_argument('--n_samples', default=None, type=int, help='Pre-training dataset size')   
+    parser.add_argument('--large_img', default=False, type=bool, help="If original images are there.")
     parser.add_argument('--output_dir', default="checkpoints/vit_small/trial", type=str, help='Path to save logs and checkpoints.')
     parser.add_argument('--saveckp_freq', default=20, type=int, help='Save checkpoint every x epochs.')
     parser.add_argument('--seed', default=0, type=int, help='Random seed.')
@@ -118,12 +120,12 @@ def train_SiT(args):
     print(f"Data loaded: there are {len(dataset)} images.")
 
     # building networks 
-    student = vits.__dict__[args.model](drop_path_rate=args.drop_path_rate)
-    teacher = vits.__dict__[args.model]()
+    student = vits.__dict__[args.model](drop_path_rate=args.drop_path_rate, in_chans=args.input_channels)
+    teacher = vits.__dict__[args.model](in_chans=args.input_channels)
     embed_dim = student.embed_dim
 
-    student = FullPipline(student, CLSHead(embed_dim, args.out_dim), RECHead(embed_dim))
-    teacher = FullPipline(teacher, CLSHead(embed_dim, args.out_dim), RECHead(embed_dim))
+    student = FullPipline(student, CLSHead(embed_dim, args.out_dim), RECHead(embed_dim, in_chans=args.input_channels))
+    teacher = FullPipline(teacher, CLSHead(embed_dim, args.out_dim), RECHead(embed_dim, in_chans=args.input_channels))
     student, teacher = student.cuda(), teacher.cuda()
     
     # synchronize batch norms
@@ -238,12 +240,13 @@ def train_one_epoch(student, teacher, teacher_without_ddp, simclr_loss, data_loa
             r_loss = recloss[torch.cat(masks_crops[0:2])==1].mean() 
                 
             if plot_==True and utils.is_main_process():
-                plot_ = False
-                #validating: check the reconstructed images
-                print_out = save_recon + '/epoch_' + str(epoch).zfill(5)  + '.jpg' 
-                imagesToPrint = torch.cat([clean_crops[0][0: min(15, bz)].cpu(),  corrupted_crops[0][0: min(15, bz)].cpu(),
-                                       s_recons[0: min(15, bz)].cpu(), masks_crops[0][0: min(15, bz)].cpu()], dim=0)
-                torchvision.utils.save_image(imagesToPrint, print_out, nrow=min(15, bz), normalize=True, range=(-1, 1))
+                if (epoch % 20 == 0) or (epoch < 10):
+                    plot_ = False
+                    #validating: check the reconstructed images
+                    print_out = save_recon + '/epoch_' + str(epoch).zfill(5)  + '.jpg' 
+                    imagesToPrint = torch.cat([clean_crops[0][0: min(15, bz)].cpu(),  corrupted_crops[0][0: min(15, bz)].cpu(),
+                                        s_recons[0: min(15, bz)].cpu(), masks_crops[0][0: min(15, bz)].cpu()], dim=0)
+                    torchvision.utils.save_image(imagesToPrint, print_out, nrow=min(15, bz), normalize=True, range=(-1, 1))
             
             
             loss = c_loss + args.lmbda * r_loss

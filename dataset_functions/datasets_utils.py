@@ -149,6 +149,7 @@ class DataAugmentationSiT(object):
     def __init__(self, args):
         
         # for corruption
+        self.nc = args.input_channels
         self.drop_perc = args.drop_perc
         self.drop_type = args.drop_type
         self.drop_align = args.drop_align
@@ -162,10 +163,28 @@ class DataAugmentationSiT(object):
             ),
             transforms.RandomGrayscale(p=0.2),
         ])
-        normalize = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-        ])
+        if args.data_set in ['MIMIC']:
+            print("Using MIMIC mean and sd")
+            mean_value_1D = (0.5292)
+            std_value_1D = (0.2507)
+            mean_value_3D = (0.5292,0.5292,0.5292)
+            std_value_3D = (0.2507,0.2507,0.2507)
+        else:
+            print("Using general mean and sd")
+            mean_value_1D = (0.485)
+            std_value_1D = (0.229)
+            mean_value_3D = (0.485, 0.456, 0.406)
+            std_value_3D = (0.229, 0.224, 0.225)
+        if (self.nc == 1) or (str(self.nc) == "1"):
+            normalize = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(mean_value_1D, std_value_1D),  
+            ])
+        elif (self.nc == 3) or (str(self.nc) == "3"):
+            normalize = transforms.Compose([
+                transforms.ToTensor(),
+                transforms.Normalize(mean_value_3D, std_value_3D),
+            ])
 
         # first global crop
         self.global_transfo1 = transforms.Compose([
@@ -185,6 +204,13 @@ class DataAugmentationSiT(object):
 
     def __call__(self, image):
         
+        if self.nc == 1:
+            if image.mode != 'L':
+                image = image.convert(mode='L')
+        elif self.nc == 3:
+            if image.mode != 'RGB':
+                image = image.convert(mode='RGB')
+
         clean_crops = []
         corrupted_crops = []
         masks_crops = []
